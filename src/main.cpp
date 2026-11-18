@@ -553,6 +553,7 @@ uint16_t clampTouchCoord(int32_t value, uint16_t maxValue) {
   if (value < 0) return 0;
   if (value >= maxValue) return maxValue - 1;
   return (uint16_t)value;
+}
 
 #ifdef BOARD_SMARTRING_PLUS
 #define CST816S_ADDR 0x15
