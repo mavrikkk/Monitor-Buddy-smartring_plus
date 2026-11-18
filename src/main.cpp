@@ -219,8 +219,14 @@ static_assert(NIGHT_START_HOUR != NIGHT_END_HOUR, "NIGHT_START_HOUR and NIGHT_EN
 // used as a harmless "status LED" sink. Nothing is wired to it —
 // AWM just toggles it. If you solder an LED to another free pin,
 // change AWM_LED_PIN to match.
-#define AWM_LED_PIN     3   // dummy/optional status LED — must NOT be an LCD or touch pin
+#ifdef BOARD_SMARTRING_PLUS
+#include "st77916_smartring_init.h"
+#define AWM_LED_PIN     -1
+#define AWM_BUTTON_PIN   0  // ESP32-S3 BOOT
+#else
+#define AWM_LED_PIN     3   // dummy/optional status LED - must NOT be an LCD or touch pin
 #define AWM_BUTTON_PIN  9   // onboard BOOT button, active LOW
+#endif
 
 // Wi-Fi retry behaviour once we are running.
 // AWM runs the reconnect in the background, so neither value blocks the UI.
@@ -268,6 +274,28 @@ static constexpr UBaseType_t NET_TASK_PRIORITY    = 1;     // same as loop()
 static constexpr uint32_t    NET_HEALTH_LOG_MS    = 5UL * 60UL * 1000UL;
 
 // ── Pin definitions ────────────────────────────────────────
+#ifdef BOARD_SMARTRING_PLUS
+#define LCD_CS   11
+#define LCD_SCK  10
+#define LCD_D0   12
+#define LCD_D1   13
+#define LCD_D2   15
+#define LCD_D3   14
+#define LCD_RST  39
+#define LCD_BL   46
+
+#define TOUCH_SDA 8
+#define TOUCH_SCL 9
+#define TOUCH_RST 40
+#define TOUCH_INT 41
+
+static const int PHYS_W       = 360;
+static const int PHYS_H       = 360;
+static const int SCREEN_W     = 320;
+static const int SCREEN_H     = 172;
+static const int CANVAS_OFF_X = (PHYS_W - SCREEN_W) / 2; // 20
+static const int CANVAS_OFF_Y = (PHYS_H - SCREEN_H) / 2; // 94
+#else
 #define LCD_BL    23
 #define LCD_DC    15
 #define LCD_CS    14
@@ -279,7 +307,7 @@ static constexpr uint32_t    NET_HEALTH_LOG_MS    = 5UL * 60UL * 1000UL;
 #define TOUCH_SCL 19
 #define TOUCH_RST 20
 #define TOUCH_INT 21
-
+#endif
 
 struct AccelData {
   float accelX;
@@ -514,6 +542,18 @@ class QMI8658Mini {
   }
 };
 
+static TwoWire *_touchWire = nullptr;
+static uint8_t  _touchRst  = 255;
+static uint8_t  _touchInt  = 255;
+static uint16_t _touchW    = 320;
+static uint16_t _touchH    = 172;
+static uint8_t  _touchRot  = 0;
+
+uint16_t clampTouchCoord(int32_t value, uint16_t maxValue) {
+  if (value < 0) return 0;
+  if (value >= maxValue) return maxValue - 1;
+  return (uint16_t)value;
+
 #ifdef BOARD_SMARTRING_PLUS
 #define CST816S_ADDR 0x15
 
@@ -560,8 +600,8 @@ bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
     rawY = (rawY < PHYS_H) ? (PHYS_H - 1 - rawY) : 0;
   }
 
-  *outX = clampTouchCoord((int32_t)rawX - CANVAS_OFF_X, _touchW - 1);
-  *outY = clampTouchCoord((int32_t)rawY - CANVAS_OFF_Y, _touchH - 1);
+  *outX = clampTouchCoord((int32_t)rawX - CANVAS_OFF_X, _touchW);
+  *outY = clampTouchCoord((int32_t)rawY - CANVAS_OFF_Y, _touchH);
   return true;
 }
 #else
@@ -577,13 +617,6 @@ bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
 
 #define AXS5106L_ADDR 0x63
 #define AXS5106L_TOUCH_DATA_REG 0x01
-
-static TwoWire *_touchWire = nullptr;
-static uint8_t  _touchRst  = 255;
-static uint8_t  _touchInt  = 255;
-static uint16_t _touchW    = 320;
-static uint16_t _touchH    = 172;
-static uint8_t  _touchRot  = 0;
 
 void bsp_touch_init(TwoWire *wire, uint8_t rstPin, uint8_t intPin,
                     uint8_t rotation, uint16_t dispW, uint16_t dispH) {
@@ -609,11 +642,6 @@ void bsp_touch_init(TwoWire *wire, uint8_t rstPin, uint8_t intPin,
 // bsp_touch_read — no-op for polling mode; INT pin can be
 // checked externally if needed.
 void bsp_touch_read() {}
-
-uint16_t clampTouchCoord(int32_t value, uint16_t maxValue) {
-  if (value < 0) return 0;
-  if (value >= maxValue) return maxValue - 1;
-  return (uint16_t)value;
 }
 
 uint16_t scaleTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) {
@@ -686,8 +714,11 @@ bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
 // ── End AXS5106L driver ────────────────────────────────────
 #endif
 
+#ifdef BOARD_SMARTRING_PLUS
+#else
 static const int SCREEN_W         = 320;
 static const int SCREEN_H         = 172;
+#endif
 static const uint8_t APP_COUNT    = 8;   // total number of pages defined
 
 // Page identifiers, in fixed display order. These index the render switch in
@@ -720,7 +751,12 @@ static const uint16_t BG = RGB565_BLACK;
 // Landscape, turned 180° for a right-side mount (settings.mount, applied
 // in setup()). Drives the display and the touch mapping; tiltSign flips the
 // IMU tilt to match.
+
+#ifdef BOARD_SMARTRING_PLUS
+uint8_t screenRotation = 0;
+#else
 uint8_t screenRotation = 1;
+#endif
 float   tiltSign       = 1.0f;
 
 // ── Settings ──────────────────────────────────────────────
@@ -742,9 +778,15 @@ static_assert(PAGE_FACE == 0 && PAGE_CLOCK == 1 && PAGE_DATE == 2 &&
 static_assert(SETTINGS_PAGE_COUNT == APP_COUNT,
               "settings.pages[] needs one entry per page");
 
+#ifdef BOARD_SMARTRING_PLUS
+Arduino_DataBus *bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
+Arduino_GFX *display = new Arduino_ST77916(bus, LCD_RST, 0, true, PHYS_W, PHYS_H, 0, 0, 0, 0,st77916_smartring_b_init_operations, sizeof(st77916_smartring_b_init_operations));
+Arduino_Canvas *gfx = new Arduino_Canvas(SCREEN_W, SCREEN_H, display, CANVAS_OFF_X, CANVAS_OFF_Y);
+#else
 Arduino_DataBus *bus     = new Arduino_HWSPI(LCD_DC, LCD_CS, LCD_SCK, LCD_MOSI);
 Arduino_GFX    *display  = new Arduino_ST7789(bus, LCD_RST, 0, false, 172, 320, 34, 0, 34, 0);
 Arduino_Canvas *gfx      = new Arduino_Canvas(SCREEN_W, SCREEN_H, display);
+#endif
 
 // ── Wi-Fi manager instance ────────────────────────────────
 // Explicit pins — see the AWM GPIO note near the top. Never let
