@@ -30,5 +30,14 @@ jobs:
           node-version: "24"
       - name: Web unit tests
         run: node --test "web-tests/*.test.mjs"
-      - name: Build the firmware
-        run: pio run -e esp32-c6
+      - name: Build SmartRing-Plus firmware
+        run: pio run -e esp32-s3-smartring-plus
+
+      - name: Upload SmartRing-Plus firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-buddy-smartring-plus
+          path: |
+            .pio/build/esp32-s3-smartring-plus/bootloader.bin
+            .pio/build/esp32-s3-smartring-plus/partitions.bin
+            .pio/build/esp32-s3-smartring-plus/firmware.bin
