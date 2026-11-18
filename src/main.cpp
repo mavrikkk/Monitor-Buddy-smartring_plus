@@ -433,18 +433,30 @@ void resetSharedI2CBus() {
 
 class QMI8658Mini {
  public:
-  int init(calData cal, uint8_t address = IMU_ADDRESS) {
-    imuAddress = address;
+int init(calData cal, uint8_t address = IMU_ADDRESS) {
     calibration = cal;
-    if (read8(0x00) != 0x05) return -1;  // WHO_AM_I
-    write8(0x60, 0xFF);                  // soft reset
-    delay(100);
-    write8(0x02, 0x40);                  // CTRL1: auto-increment
-    setAccelRange(4);
-    setGyroRange(512);
-    write8(0x06, 0x03);                  // CTRL5: accel/gyro low-pass defaults
-    write8(0x08, 0x03);                  // CTRL7: enable accel + gyro
-    delay(100);
+    uint8_t who = 0;
+    const uint8_t addrs[2] = { address, (uint8_t)(address == 0x6B ? 0x6A : 0x6B) };
+    imuAddress = 0;
+    for (int i = 0; i < 2; i++) {
+      imuAddress = addrs[i];
+      who = read8(0x00);
+      if (who == 0x05) break;
+    }
+    Serial.printf("[IMU] probe addr=0x%02X WHO_AM_I=0x%02X\n", imuAddress, who);
+    if (who != 0x05) return -1;
+
+    write8(0x60, 0xB0);   // soft reset
+    delay(20);
+    write8(0x02, 0x40);   // CTRL1: auto-increment, little-endian
+    write8(0x08, 0x00);   // CTRL7: disable all before configuring range/ODR
+    accelScale = 4.0f / 32768.0f;
+    gyroScale  = 512.0f / 32768.0f;
+    write8(0x03, 0x15);   // CTRL2: ±4G (0x10) | ODR 250Hz (0x05)
+    write8(0x04, 0x55);   // CTRL3: ±512dps (0x50) | ODR 250Hz (0x05)
+    write8(0x06, 0x03);   // CTRL5: low-pass defaults
+    write8(0x08, 0x03);   // CTRL7: enable accel + gyro together
+    delay(25);
     return 0;
   }
 
@@ -519,7 +531,7 @@ class QMI8658Mini {
   bool readBytes(uint8_t reg, uint8_t *buffer, uint8_t len) {
     Wire.beginTransmission(imuAddress);
     Wire.write(reg);
-    if (Wire.endTransmission(true) != 0) { resetSharedI2CBus(); return false; }
+    if (Wire.endTransmission(false) != 0) { resetSharedI2CBus(); return false; }
     delayMicroseconds(300);
     if (Wire.requestFrom((uint8_t)imuAddress, len, (uint8_t)true) != len) {
       resetSharedI2CBus();
