@@ -514,6 +514,57 @@ class QMI8658Mini {
   }
 };
 
+#ifdef BOARD_SMARTRING_PLUS
+#define CST816S_ADDR 0x15
+
+void bsp_touch_init(TwoWire *wire, uint8_t rstPin, uint8_t intPin,
+                    uint8_t rotation, uint16_t dispW, uint16_t dispH) {
+  _touchWire = wire;
+  _touchRst  = rstPin;
+  _touchInt  = intPin;
+  _touchRot  = rotation;
+  _touchW    = dispW;
+  _touchH    = dispH;
+  pinMode(_touchRst, OUTPUT);
+  digitalWrite(_touchRst, LOW);
+  delay(10);
+  digitalWrite(_touchRst, HIGH);
+  delay(50);
+  pinMode(_touchInt, INPUT_PULLUP);
+}
+
+void bsp_touch_read() {}
+
+bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
+  if (!_touchWire) return false;
+  _touchWire->beginTransmission(CST816S_ADDR);
+  _touchWire->write(0x02);
+  if (_touchWire->endTransmission(false) != 0) {
+    resetSharedI2CBus();
+    return false;
+  }
+  uint8_t buf[5];
+  if (_touchWire->requestFrom((uint8_t)CST816S_ADDR, (uint8_t)5) != 5) {
+    resetSharedI2CBus();
+    return false;
+  }
+  for (int i = 0; i < 5; i++) buf[i] = _touchWire->read();
+
+  uint8_t nPoints = buf[0] & 0x0F;
+  if (nPoints == 0) return false;
+
+  uint16_t rawX = ((buf[1] & 0x0F) << 8) | buf[2];
+  uint16_t rawY = ((buf[3] & 0x0F) << 8) | buf[4];
+  if (_touchRot == 2) {
+    rawX = (rawX < PHYS_W) ? (PHYS_W - 1 - rawX) : 0;
+    rawY = (rawY < PHYS_H) ? (PHYS_H - 1 - rawY) : 0;
+  }
+
+  *outX = clampTouchCoord((int32_t)rawX - CANVAS_OFF_X, _touchW - 1);
+  *outY = clampTouchCoord((int32_t)rawY - CANVAS_OFF_Y, _touchH - 1);
+  return true;
+}
+#else
 // ── AXS5106L inline touch reader ──────────────────────────
 // The AXS5106L is the capacitive touch controller on the
 // Waveshare ESP32-C6-Touch-LCD-1.47. ESP-IDF components exist,
@@ -633,6 +684,7 @@ bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
   return true;
 }
 // ── End AXS5106L driver ────────────────────────────────────
+#endif
 
 static const int SCREEN_W         = 320;
 static const int SCREEN_H         = 172;
@@ -3061,15 +3113,24 @@ void setup() {
   if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed - using config.h values");
   loadSettings();
   savedNightBrightness = settings.night.brightness;
+  #ifdef BOARD_SMARTRING_PLUS
+  screenRotation = settings.mount == MOUNT_RIGHT ? 2 : 0;
+  #else
   screenRotation = settings.mount == MOUNT_RIGHT ? 3 : 1;
+  #endif
   tiltSign       = settings.mount == MOUNT_RIGHT ? -1.0f : 1.0f;
   setenv("TZ", settings.tzRule, 1);
   tzset();
   applyTheme();   // themed colours from settings.theme
 
   if (!gfx->begin(40000000)) Serial.println("Display init failed — check wiring");
+  #ifdef BOARD_SMARTRING_PLUS
+  display->setRotation(screenRotation);
+  display->fillScreen(BLACK);
+  #else
   lcdRegInit();
   display->setRotation(screenRotation);
+  #endif
   ledcAttach(LCD_BL, 5000, 8);
   writeBacklight(brightnessLevel);
   gfx->fillScreen(BG);
@@ -3126,7 +3187,12 @@ void setup() {
   wifiManager.setFallbackPolicy(AyresWiFiManager::FallbackPolicy::ON_FAIL);
   wifiManager.setAutoReconnect(true);
   wifiManager.enableButtonPortal(true);          // BOOT button 2–5 s opens portal
+  
+  #ifdef BOARD_SMARTRING_PLUS
+  wifiManager.setLedAuto(false);
+  #else
   wifiManager.setLedAuto(true);
+  #endif
 
   wifiManager.setReconnectAttemptMs(WIFI_RETRY_WINDOW_MS);
   wifiManager.setReconnectBackoffMs(WIFI_RETRY_INTERVAL_MS);
