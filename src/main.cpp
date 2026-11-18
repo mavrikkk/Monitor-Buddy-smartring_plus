@@ -3169,7 +3169,7 @@ void setup() {
   if (!gfx->begin(40000000)) Serial.println("Display init failed — check wiring");
   #ifdef BOARD_SMARTRING_PLUS
   display->setRotation(screenRotation);
-  display->fillScreen(BLACK);
+  display->fillScreen(0x0000);
   #else
   lcdRegInit();
   display->setRotation(screenRotation);
