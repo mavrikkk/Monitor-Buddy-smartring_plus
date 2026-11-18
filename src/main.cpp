@@ -593,12 +593,10 @@ bool bsp_touch_get_coordinates(uint16_t *outX, uint16_t *outY) {
   _touchWire->beginTransmission(CST816S_ADDR);
   _touchWire->write(0x02);
   if (_touchWire->endTransmission(false) != 0) {
-    resetSharedI2CBus();
     return false;
   }
   uint8_t buf[5];
   if (_touchWire->requestFrom((uint8_t)CST816S_ADDR, (uint8_t)5) != 5) {
-    resetSharedI2CBus();
     return false;
   }
   for (int i = 0; i < 5; i++) buf[i] = _touchWire->read();
@@ -2835,6 +2833,13 @@ void readSensors() {
   filteredGz = filteredGz*0.82f + gyro.gyroZ*0.18f;
   // Fast spin → surprised face
   if (fabs(filteredGz) > 130.0f) { faceMood = 2; pressPulse = 1.0f; }
+
+  static uint32_t lastImuLog = 0;
+  if (millis() - lastImuLog > 1000) {
+    lastImuLog = millis();
+    Serial.printf("[IMU] ready=%d ax=%.2f ay=%.2f az=%.2f gz=%.1f\n",
+                  imuReady, accel.accelX, accel.accelY, accel.accelZ, gyro.gyroZ);
+  }
 }
 
 void readTouch() {
