@@ -3743,7 +3743,7 @@ void loop() {
   if (imuReady) {
 #ifdef BOARD_SMARTRING_PLUS
     tx = clampFloat(-tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
-    ty = clampFloat( tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
+    ty = clampFloat(-tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
 #else
     tx = clampFloat(-tiltSign*(filteredAy-restAy)*2.2f, -1.0f, 1.0f);
     ty = clampFloat( tiltSign*(filteredAx-restAx)*2.2f, -1.0f, 1.0f);
