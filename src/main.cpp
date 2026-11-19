@@ -1441,14 +1441,80 @@ void drawWeatherIcon(int cx, int cy, int code, bool isDay, uint16_t color) {
   }
 }
 
+#ifdef BOARD_SMARTRING_PLUS
+// Map MET Norway Locationforecast symbol_code to the WMO weather codes used by
+// weatherCodeText() and drawWeatherIcon().
+static int metSymbolToWmoCode(const char *sym) {
+  if (!sym || !sym[0]) return 3;
+  if (strstr(sym, "thunder")) return 95;
+  if (strstr(sym, "snow") || strstr(sym, "sleet")) return 71;
+  if (strstr(sym, "rain") || strstr(sym, "drizzle")) return 61;
+  if (strstr(sym, "fog")) return 45;
+  if (strncmp(sym, "clearsky", 8) == 0 || strncmp(sym, "fair", 4) == 0) return 0;
+  if (strncmp(sym, "partlycloudy", 12) == 0) return 2;
+  return 3;
+}
+#endif
+
 bool fetchWeather() {
   if (!ensureWifi()) return false;
   WiFiClientSecure client;
   client.useBuiltinCACertBundle();     // verify the server against the Mozilla roots
   client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
   HTTPClient http;
-  http.setTimeout(HTTP_TIMEOUT_MS);
   http.setConnectTimeout(HTTP_CONNECT_TIMEOUT_MS);
+#ifdef BOARD_SMARTRING_PLUS
+  // MET Norway (Yr.no) Locationforecast 2.0 compact API — no API key required,
+  // requires an identifying User-Agent and coordinates rounded to <= 4 decimals.
+  http.setTimeout(8000);
+  http.useHTTP10(true);                // avoid chunked transfer when streaming into ArduinoJson
+  http.setUserAgent("Monitor-Buddy-SmartRingPlus/" FW_VERSION " (https://github.com/mavrikkk/Monitor-Buddy-smartring_plus)");
+  char url[128];
+  snprintf(url, sizeof(url),
+           "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f",
+           atof(settings.lat), atof(settings.lon));
+  if (!http.begin(client, url))
+    return false;
+  int status = http.GET();
+  if (status != HTTP_CODE_OK && status != 203) { http.end(); return false; }
+
+  JsonDocument filter;
+  JsonObject fdata = filter["properties"]["timeseries"][0]["data"].to<JsonObject>();
+  fdata["instant"]["details"]["air_temperature"]   = true;
+  fdata["instant"]["details"]["relative_humidity"] = true;
+  fdata["instant"]["details"]["wind_speed"]        = true;
+  fdata["next_1_hours"]["summary"]["symbol_code"]  = true;
+  fdata["next_6_hours"]["summary"]["symbol_code"]  = true;
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (err) return false;
+
+  JsonObject data    = doc["properties"]["timeseries"][0]["data"];
+  JsonObject details = data["instant"]["details"];
+  if (details["air_temperature"].isNull()) return false;
+
+  float tempC  = details["air_temperature"].as<float>();
+  float temp   = (settings.tempUnit == TEMP_FAHRENHEIT) ? (tempC * 9.0f / 5.0f + 32.0f) : tempC;
+  float windMs = details["wind_speed"].as<float>();
+  float wind   = (settings.windUnit == WIND_MPH) ? (windMs * 2.23694f) : (windMs * 3.6f);
+  const char *sym = data["next_1_hours"]["summary"]["symbol_code"]
+                    | data["next_6_hours"]["summary"]["symbol_code"]
+                    | "";
+
+  WeatherData w;
+  w.temp      = (int)round(temp);
+  w.humidity  = (int)round(details["relative_humidity"].as<float>());
+  w.wind      = (int)round(wind);
+  w.code      = metSymbolToWmoCode(sym);
+  w.isDay     = (strstr(sym, "_night") == nullptr);
+  w.updatedAt = millis();
+  w.valid     = true;
+  publishNetData(netShared.weather, w);
+  return true;
+#else
+  http.setTimeout(HTTP_TIMEOUT_MS);
   // '+' means a space in a URL query, so encode it (Etc/GMT+8, +48.1).
   String latEnc = settings.lat;
   latEnc.replace("+", "%2B");
@@ -1480,6 +1546,7 @@ bool fetchWeather() {
   w.valid     = true;
   publishNetData(netShared.weather, w);
   return true;
+#endif
 }
 
 // ── Stock fetch (Finnhub JSON) ────────────────────────────────────
@@ -1740,10 +1807,17 @@ struct Eye {
   float targetX, targetY, targetW, targetH;
   float pupilX, pupilY, targetPupilX, targetPupilY;
   float velX = 0, velY = 0, velW = 0, velH = 0, pVelX = 0, pVelY = 0;
+#ifdef BOARD_SMARTRING_PLUS
+  float k  = 0.18f;   // livelier eye spring
+  float d  = 0.62f;   // slight playful bounce
+  float pk = 0.15f;   // responsive pupil spring
+  float pd = 0.54f;   // pupil damping
+#else
   float k  = 0.12f;   // eye spring
   float d  = 0.60f;   // eye damping (heavier feel)
   float pk = 0.08f;   // pupil spring (softer/laggier)
   float pd = 0.50f;   // pupil damping
+#endif
   bool  blinking = false;
   unsigned long lastBlink = 0, nextBlinkTime = 0;
 
@@ -1914,13 +1988,19 @@ void updateFacePhysics(float tiltX, float tiltY) {
 
   // Gaze target = saccade offset + live IMU tilt, applied every frame.
 #ifdef BOARD_SMARTRING_PLUS
-  float pupX = gazeLX + tiltX * 26.0f;
-  float pupY = gazeLY + tiltY * 18.0f;
+  // Fade out random saccades while actively tilting so the eyes clearly follow the board.
+  float tiltMag = clampFloat(fabs(tiltX) + fabs(tiltY), 0.0f, 1.0f);
+  float sacWeight = 1.0f - tiltMag * 0.85f;
+  float pupX = gazeLX * sacWeight + tiltX * 28.0f;
+  float pupY = gazeLY * sacWeight + tiltY * 22.0f;
   leftEye.targetPupilX  = rightEye.targetPupilX = pupX;
   leftEye.targetPupilY  = rightEye.targetPupilY = pupY;
-  leftEye.targetX  = FACE_LEFT_CX  + gazeLX * 0.35f + tiltX * 12.0f;
-  rightEye.targetX = FACE_RIGHT_CX + gazeLX * 0.35f + tiltX * 12.0f;
-  leftEye.targetY  = rightEye.targetY = FACE_EYES_CY + gazeLY * 0.35f + tiltY * 9.0f;
+  leftEye.targetX  = FACE_LEFT_CX  + gazeLX * 0.35f * sacWeight + tiltX * 34.0f;
+  rightEye.targetX = FACE_RIGHT_CX + gazeLX * 0.35f * sacWeight + tiltX * 34.0f;
+  float baseY = FACE_EYES_CY + gazeLY * 0.35f * sacWeight + tiltY * 30.0f;
+  // Subtle playful roll offset between left and right eye when tilting sideways.
+  leftEye.targetY  = baseY - tiltX * 9.0f;
+  rightEye.targetY = baseY + tiltX * 9.0f;
 #else
   float pupX = gazeLX + tiltX * 20.0f;
   float pupY = gazeLY + tiltY * 12.0f;
@@ -3048,8 +3128,12 @@ void triggerDoubleTap() {
 
 void triggerFaceTap() {
   uint32_t now = millis();
-  // Double-tap detection: two taps within 400 ms
+  // Double-tap detection: wider window on 360x360 CST816S
+#ifdef BOARD_SMARTRING_PLUS
+  if (now - lastTapMs < 600UL) {
+#else
   if (now - lastTapMs < 400UL) {
+#endif
     tapCount++;
     if (tapCount >= 2) {
       tapCount = 0;
@@ -3088,11 +3172,19 @@ void readSensors() {
   imu.update();
   imu.getAccel(&accel);
   imu.getGyro(&gyro);
+#ifdef BOARD_SMARTRING_PLUS
+  filteredAx = filteredAx*0.70f + accel.accelX*0.30f;
+  filteredAy = filteredAy*0.70f + accel.accelY*0.30f;
+  filteredGz = filteredGz*0.72f + gyro.gyroZ*0.28f;
+  // Quick twist/shake → surprised face
+  if (fabs(filteredGz) > 95.0f) { faceMood = 2; pressPulse = 1.0f; }
+#else
   filteredAx = filteredAx*0.88f + accel.accelX*0.12f;
   filteredAy = filteredAy*0.88f + accel.accelY*0.12f;
   filteredGz = filteredGz*0.82f + gyro.gyroZ*0.18f;
   // Fast spin → surprised face
   if (fabs(filteredGz) > 130.0f) { faceMood = 2; pressPulse = 1.0f; }
+#endif
 
 }
 
@@ -3122,7 +3214,11 @@ void readTouch() {
     if (touchSwipeDone) return;
     int16_t dx = (int16_t)x-(int16_t)touchStartX;
     int16_t dy = (int16_t)y-(int16_t)touchStartY;
+#ifdef BOARD_SMARTRING_PLUS
+    if (abs(dx) > 24 || abs(dy) > 24) touchMoved = true;
+#else
     if (abs(dx) > 12 || abs(dy) > 12) touchMoved = true;
+#endif
 
     // Touch-and-hold (still, ~2.5 s) → open the Wi-Fi setup portal.
     // Fires once per press; a swipe cancels it.
@@ -3160,21 +3256,32 @@ void readTouch() {
     // The AXS5106L INT/read path can miss the odd frame. Require a few
     // consecutive misses before treating it as release, otherwise taps/swipes
     // get chopped up and feel flaky.
+#ifdef BOARD_SMARTRING_PLUS
+    if (++touchMissFrames < 1) return;
+#else
     if (++touchMissFrames < 3) return;
+#endif
     uint32_t pressMs = millis() - touchStartMs;
     int16_t dx = (int16_t)touchLastX-(int16_t)touchStartX;
     int16_t dy = (int16_t)touchLastY-(int16_t)touchStartY;
+#ifdef BOARD_SMARTRING_PLUS
+    const uint32_t minTapMs = 15;
+    const int16_t  maxTapD  = 45;
+#else
+    const uint32_t minTapMs = 35;
+    const int16_t  maxTapD  = 35;
+#endif
     if (touchDark) {
       // The dark: a press wakes, however long, and never counts as half a
       // double tap. A short up or down drag doesn't: it was a swipe that fell
       // short of a step, not a request to wake.
       const bool shortDrag = touchMoved && abs(dy) > abs(dx);
-      if (pressMs >= 35 && !touchSwipeDone && !touchNightStepped && !shortDrag) {
+      if (pressMs >= minTapMs && !touchSwipeDone && !touchNightStepped && !shortDrag) {
         nightWake();
         tapCount = 0;
         lastTapMs = 0;
       }
-    } else if (pressMs >= 35 && pressMs <= 650 && !touchMoved && abs(dx) < 35 && abs(dy) < 35) {
+    } else if (pressMs >= minTapMs && pressMs <= 650 && !touchMoved && abs(dx) < maxTapD && abs(dy) < maxTapD) {
       triggerFaceTap();
     }
     touchWasDown = false;
@@ -3612,8 +3719,13 @@ void loop() {
 
   float tx=0.0f, ty=0.0f;
   if (imuReady) {
+#ifdef BOARD_SMARTRING_PLUS
+    tx = clampFloat(-tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
+    ty = clampFloat( tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
+#else
     tx = clampFloat(-tiltSign*(filteredAy-restAy)*2.2f, -1.0f, 1.0f);
     ty = clampFloat( tiltSign*(filteredAx-restAx)*2.2f, -1.0f, 1.0f);
+#endif
   } else {
     tx = sin(millis()*0.0014f)*0.25f;
     ty = cos(millis()*0.0011f)*0.16f;
