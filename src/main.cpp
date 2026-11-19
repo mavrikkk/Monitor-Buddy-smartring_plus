@@ -1466,17 +1466,27 @@ bool fetchWeather() {
 #ifdef BOARD_SMARTRING_PLUS
   // MET Norway (Yr.no) Locationforecast 2.0 compact API — no API key required,
   // requires an identifying User-Agent and coordinates rounded to <= 4 decimals.
-  http.setTimeout(8000);
+  client.setHandshakeTimeout(15);
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
   http.useHTTP10(true);                // avoid chunked transfer when streaming into ArduinoJson
   http.setUserAgent("Monitor-Buddy-SmartRingPlus/" FW_VERSION " (https://github.com/mavrikkk/Monitor-Buddy-smartring_plus)");
   char url[128];
   snprintf(url, sizeof(url),
            "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f",
            atof(settings.lat), atof(settings.lon));
-  if (!http.begin(client, url))
+  if (!http.begin(client, url)) {
+    Serial.println("[weather] http.begin failed");
     return false;
+  }
+  http.addHeader("Accept", "application/json");
+  http.addHeader("Accept-Encoding", "identity");
   int status = http.GET();
-  if (status != HTTP_CODE_OK && status != 203) { http.end(); return false; }
+  if (status != HTTP_CODE_OK && status != 203) {
+    Serial.printf("[weather] HTTP %d (%s) url=%s\n", status, http.errorToString(status).c_str(), url);
+    http.end();
+    return false;
+  }
 
   JsonDocument filter;
   JsonObject fdata = filter["properties"]["timeseries"][0]["data"].to<JsonObject>();
@@ -1489,7 +1499,10 @@ bool fetchWeather() {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
   http.end();
-  if (err) return false;
+  if (err) {
+    Serial.printf("[weather] JSON err: %s\n", err.c_str());
+    return false;
+  }
 
   JsonObject data    = doc["properties"]["timeseries"][0]["data"];
   JsonObject details = data["instant"]["details"];
@@ -3720,8 +3733,8 @@ void loop() {
   float tx=0.0f, ty=0.0f;
   if (imuReady) {
 #ifdef BOARD_SMARTRING_PLUS
-    tx = clampFloat(-tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
-    ty = clampFloat( tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
+    tx = clampFloat( tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
+    ty = clampFloat( tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
 #else
     tx = clampFloat(-tiltSign*(filteredAy-restAy)*2.2f, -1.0f, 1.0f);
     ty = clampFloat( tiltSign*(filteredAx-restAx)*2.2f, -1.0f, 1.0f);
