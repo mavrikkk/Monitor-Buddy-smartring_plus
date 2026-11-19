@@ -1469,7 +1469,6 @@ bool fetchWeather() {
   client.setHandshakeTimeout(15);
   http.setConnectTimeout(10000);
   http.setTimeout(15000);
-  http.useHTTP10(true);                // avoid chunked transfer when streaming into ArduinoJson
   http.setUserAgent("Monitor-Buddy-SmartRingPlus/" FW_VERSION " (https://github.com/mavrikkk/Monitor-Buddy-smartring_plus)");
   char url[128];
   snprintf(url, sizeof(url),
@@ -1488,6 +1487,13 @@ bool fetchWeather() {
     return false;
   }
 
+  String body = http.getString();
+  http.end();
+  if (body.length() == 0) {
+    Serial.println("[weather] empty body");
+    return false;
+  }
+
   JsonDocument filter;
   JsonObject fdata = filter["properties"]["timeseries"][0]["data"].to<JsonObject>();
   fdata["instant"]["details"]["air_temperature"]   = true;
@@ -1497,10 +1503,9 @@ bool fetchWeather() {
   fdata["next_6_hours"]["summary"]["symbol_code"]  = true;
 
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-  http.end();
+  DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
   if (err) {
-    Serial.printf("[weather] JSON err: %s\n", err.c_str());
+    Serial.printf("[weather] JSON err: %s (len=%u)\n", err.c_str(), (unsigned)body.length());
     return false;
   }
 
@@ -3189,6 +3194,10 @@ void readSensors() {
   filteredAx = filteredAx*0.70f + accel.accelX*0.30f;
   filteredAy = filteredAy*0.70f + accel.accelY*0.30f;
   filteredGz = filteredGz*0.72f + gyro.gyroZ*0.28f;
+  // Gently re-center neutral pose so the eyes look straight at you whether the
+  // device lies flat, sits on a stand, or is picked up in your hand (~2-3 s).
+  restAx = restAx*0.985f + filteredAx*0.015f;
+  restAy = restAy*0.985f + filteredAy*0.015f;
   // Quick twist/shake → surprised face
   if (fabs(filteredGz) > 95.0f) { faceMood = 2; pressPulse = 1.0f; }
 #else
@@ -3733,7 +3742,7 @@ void loop() {
   float tx=0.0f, ty=0.0f;
   if (imuReady) {
 #ifdef BOARD_SMARTRING_PLUS
-    tx = clampFloat( tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
+    tx = clampFloat(-tiltSign*(filteredAx-restAx)*3.4f, -1.0f, 1.0f);
     ty = clampFloat( tiltSign*(filteredAy-restAy)*3.4f, -1.0f, 1.0f);
 #else
     tx = clampFloat(-tiltSign*(filteredAy-restAy)*2.2f, -1.0f, 1.0f);
