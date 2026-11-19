@@ -291,10 +291,10 @@ static constexpr uint32_t    NET_HEALTH_LOG_MS    = 5UL * 60UL * 1000UL;
 
 static const int PHYS_W       = 360;
 static const int PHYS_H       = 360;
-static const int SCREEN_W     = 320;
-static const int SCREEN_H     = 172;
-static const int CANVAS_OFF_X = (PHYS_W - SCREEN_W) / 2; // 20
-static const int CANVAS_OFF_Y = (PHYS_H - SCREEN_H) / 2; // 94
+static const int SCREEN_W     = 360;
+static const int SCREEN_H     = 360;
+static const int CANVAS_OFF_X = 0;
+static const int CANVAS_OFF_Y = 0;
 #else
 #define LCD_BL    23
 #define LCD_DC    15
@@ -653,7 +653,6 @@ void bsp_touch_init(TwoWire *wire, uint8_t rstPin, uint8_t intPin,
 // bsp_touch_read — no-op for polling mode; INT pin can be
 // checked externally if needed.
 void bsp_touch_read() {}
-}
 
 uint16_t scaleTouchAxis(uint16_t raw, uint16_t rawMin, uint16_t rawMax, uint16_t outMax) {
   if (rawMax <= rawMin || outMax == 0) return 0;
@@ -1187,8 +1186,36 @@ void centeredTextColor(const char *text, int y, uint8_t size, uint16_t color) {
   gfx->print(text);
 }
 
+#ifdef BOARD_SMARTRING_PLUS
+static int circleChordWidth(int y) {
+  int dy = y - (SCREEN_H / 2);
+  int r  = (SCREEN_W / 2) - 14; // 166 px safe radius inside 360x360 round bezel
+  if (abs(dy) >= r) return 120;
+  return (int)(2.0f * sqrtf((float)(r * r - dy * dy)));
+}
+#endif
+
 void drawPageDots() {
   if (pageCount == 0) return;
+#ifdef BOARD_SMARTRING_PLUS
+  const int spacing = 18;
+  const int dotY    = SCREEN_H - 30; // y = 330
+  int startX = (SCREEN_W - (pageCount - 1) * spacing) / 2;
+  for (uint8_t i = 0; i < pageCount; i++) {
+    int x = startX + i * spacing;
+    if (i == currentPageIdx) gfx->fillCircle(x, dotY, 4, FG);
+    else                     gfx->drawCircle(x, dotY, 3, rgb(90, 90, 90));
+  }
+  const uint8_t entries = currentApp == PAGE_STOCK ? stockActiveCount : currentApp == PAGE_COIN ? coinActiveCount : 0;
+  const uint8_t shown   = currentApp == PAGE_STOCK ? stockSub : coinSub;
+  if (entries >= 2) {
+    for (uint8_t i = 0; i < entries; i++) {
+      const int y = subDotY(i, entries, SCREEN_H);
+      if (i == shown % entries) gfx->fillCircle(SCREEN_W - 18, y, 4, FG);
+      else                      gfx->drawCircle(SCREEN_W - 18, y, 3, rgb(90, 90, 90));
+    }
+  }
+#else
   int startX = SCREEN_W/2 - ((pageCount-1)*16)/2;
   for (uint8_t i = 0; i < pageCount; i++) {
     if (i == currentPageIdx)
@@ -1207,6 +1234,7 @@ void drawPageDots() {
       else                      gfx->drawCircle(SCREEN_W - 8, y, 2, rgb(90, 90, 90));
     }
   }
+#endif
 }
 
 void drawHeader(const char *title) {
@@ -1221,15 +1249,29 @@ void drawHeader(const char *title) {
 void centeredFit(const char *text, int y, uint8_t maxSize) {
   uint8_t sz = maxSize;
   int len = (int)strlen(text);
+#ifdef BOARD_SMARTRING_PLUS
+  int maxW = circleChordWidth(y + (int)sz * 4);
+  while (sz > 1 && len * 6 * (int)sz > maxW) {
+    sz--;
+    maxW = circleChordWidth(y + (int)sz * 4);
+  }
+#else
   while (sz > 1 && len * 6 * sz > SCREEN_W - 12) sz--;
+#endif
   centeredText(text, y, sz);
 }
 
 void drawBootMessage(const char *l1, const char *l2, const char *l3) {
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  if (l1 && l1[0]) centeredFit(l1, 112, 4);
+  if (l2 && l2[0]) centeredFit(l2, 174, 3);
+  if (l3 && l3[0]) centeredFit(l3, 224, 2);
+#else
   if (l1) centeredFit(l1, 36, 4);   // headline, up to size 4
   if (l2) centeredFit(l2, 90, 3);   // up to size 3
   if (l3) centeredFit(l3, 128, 2);  // up to size 2
+#endif
   gfx->flush();
 }
 
@@ -1680,10 +1722,16 @@ static const unsigned char bmp_github[] PROGMEM = {
 static const int GH_W = 56, GH_H = 56;
 
 
-// Eye geometry on the 320x172 canvas (centres, not top-left).
+// Eye geometry (centres, not top-left).
+#ifdef BOARD_SMARTRING_PLUS
+static const float FACE_LEFT_CX  = 114.0f;
+static const float FACE_RIGHT_CX = 246.0f;
+static const float FACE_EYES_CY  = 166.0f;
+#else
 static const float FACE_LEFT_CX  = 105.0f;
 static const float FACE_RIGHT_CX = 215.0f;
 static const float FACE_EYES_CY  = 80.0f;
+#endif
 
 // One eye: animated CENTRE (x,y) + size (w,h), plus a pupil that lags behind.
 // Each quantity is a critically-ish damped spring toward its target.
@@ -1865,6 +1913,15 @@ void updateFacePhysics(float tiltX, float tiltY) {
   }
 
   // Gaze target = saccade offset + live IMU tilt, applied every frame.
+#ifdef BOARD_SMARTRING_PLUS
+  float pupX = gazeLX + tiltX * 26.0f;
+  float pupY = gazeLY + tiltY * 18.0f;
+  leftEye.targetPupilX  = rightEye.targetPupilX = pupX;
+  leftEye.targetPupilY  = rightEye.targetPupilY = pupY;
+  leftEye.targetX  = FACE_LEFT_CX  + gazeLX * 0.35f + tiltX * 12.0f;
+  rightEye.targetX = FACE_RIGHT_CX + gazeLX * 0.35f + tiltX * 12.0f;
+  leftEye.targetY  = rightEye.targetY = FACE_EYES_CY + gazeLY * 0.35f + tiltY * 9.0f;
+#else
   float pupX = gazeLX + tiltX * 20.0f;
   float pupY = gazeLY + tiltY * 12.0f;
   leftEye.targetPupilX  = rightEye.targetPupilX = pupX;
@@ -1872,6 +1929,7 @@ void updateFacePhysics(float tiltX, float tiltY) {
   leftEye.targetX  = FACE_LEFT_CX  + gazeLX * 0.3f + tiltX * 8.0f;
   rightEye.targetX = FACE_RIGHT_CX + gazeLX * 0.3f + tiltX * 8.0f;
   leftEye.targetY  = rightEye.targetY = FACE_EYES_CY + gazeLY * 0.3f + tiltY * 6.0f;
+#endif
 
   if (leftEye.blinking) {
     leftEye.targetH = rightEye.targetH = 4;                 // slam shut
@@ -1927,6 +1985,16 @@ void drawFace(float tx, float ty) {
   updateFacePhysics(tx, ty);
 
   // Floating emotion particles (scaled 2x from DESKBUDDY's 16x16 icons).
+#ifdef BOARD_SMARTRING_PLUS
+  if (faceMood == MOOD_LOVE) {
+    drawBitmapScaled(96,  62, bmp_heart, 16, 16, 2, FG);
+    drawBitmapScaled(232, 62, bmp_heart, 16, 16, 2, FG);
+  } else if (faceMood == MOOD_SLEEPY) {
+    drawBitmapScaled(164, 58, bmp_zzz, 16, 16, 2, FG);
+  } else if (faceMood == MOOD_ANGRY) {
+    drawBitmapScaled(164, 60, bmp_anger, 16, 16, 2, FG);
+  }
+#else
   if (faceMood == MOOD_LOVE) {
     drawBitmapScaled(18,  8, bmp_heart, 16, 16, 2, FG);
     drawBitmapScaled(270, 8, bmp_heart, 16, 16, 2, FG);
@@ -1935,6 +2003,7 @@ void drawFace(float tx, float ty) {
   } else if (faceMood == MOOD_ANGRY) {
     drawBitmapScaled(144, 8, bmp_anger, 16, 16, 2, FG); // centred between the eyes
   }
+#endif
 
   drawEyeShape(leftEye, true);
   drawEyeShape(rightEye, false);
@@ -1942,8 +2011,13 @@ void drawFace(float tx, float ty) {
   // HAPPY: soft rosy blush cheeks at the lower-outer corners of the eyes.
   if (faceMood == MOOD_HAPPY) {
     uint16_t blush = rgb(255, 120, 150);
+#ifdef BOARD_SMARTRING_PLUS
+    gfx->fillCircle(76,  226, 14, blush);
+    gfx->fillCircle(284, 226, 14, blush);
+#else
     gfx->fillCircle(70,  126, 13, blush);
     gfx->fillCircle(250, 126, 13, blush);
+#endif
   }
 
   // Small offline hint on the face page so the user knows setup is available.
@@ -1952,7 +2026,11 @@ void drawFace(float tx, float ty) {
     gfx->setTextColor(rgb(150,150,150));
     const char *msg = wifiConfigured() ? "WIFI OFFLINE" : "HOLD TO SET UP WIFI";
     int w = (int)strlen(msg)*6;
+#ifdef BOARD_SMARTRING_PLUS
+    gfx->setCursor((SCREEN_W-w)/2, 294);
+#else
     gfx->setCursor((SCREEN_W-w)/2, 6);
+#endif
     gfx->print(msg);
   }
   drawPageDots();
@@ -1989,6 +2067,21 @@ void drawClock() {
   const bool pm = hh >= 12;
   if (h12) hh = hour12(hh);
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  const int W = 58, H = 112, T = 11, Y = 124;
+  if (h12) centeredTextColor(pm ? "PM" : "AM", 78, 3, COL_SEC);
+  if (!h12 || hh >= 10) drawDigit(37, Y, hh/10, W, H, T, COL_TIME);
+  drawDigit(105, Y, hh%10, W, H, T, COL_TIME);
+  if ((ss%2)==0) {
+    gfx->fillRoundRect(174, Y+32, 12, 12, 5, COL_TIME);
+    gfx->fillRoundRect(174, Y+68, 12, 12, 5, COL_TIME);
+  }
+  drawDigit(197, Y, mm/10, W, H, T, COL_TIME);
+  drawDigit(265, Y, mm%10, W, H, T, COL_TIME);
+  char sbuf[4];
+  snprintf(sbuf, sizeof(sbuf), "%02u", (unsigned)ss);
+  centeredTextColor(sbuf, 258, 4, COL_SEC);
+#else
   const int W = 54, H = 100, T = 10, Y = 18;   // bigger 7-seg digits
   // HH:MM shifted left to make room for the seconds after the minutes.
   // 12-hour: no leading zero (" 9:41", not "09:41").
@@ -2012,6 +2105,7 @@ void drawClock() {
   gfx->setTextSize(3); gfx->setTextColor(COL_SEC);
   gfx->setCursor(278, Y + H - 24);
   gfx->print(sbuf);
+#endif
   drawPageDots();
 }
 
@@ -2024,12 +2118,20 @@ void drawDatePage() {
   int32_t year = now.year; uint8_t month = now.month, day = now.mday;
   uint8_t weekday = now.wday;
   gfx->fillScreen(BG);
-  centeredTextColor(wd[weekday], 14, 4, COL_DATE_WD);
   char line[24];
+#ifdef BOARD_SMARTRING_PLUS
+  centeredTextColor(wd[weekday], 84, 4, COL_DATE_WD);
+  snprintf(line, sizeof(line), "%s %02u", mon[month-1], day);
+  centeredTextColor(line, 148, 7, COL_DATE_BIG);
+  snprintf(line, sizeof(line), "%ld", (long)year);
+  centeredTextColor(line, 234, 4, COL_VALUE);
+#else
+  centeredTextColor(wd[weekday], 14, 4, COL_DATE_WD);
   snprintf(line, sizeof(line), "%s %02u", mon[month-1], day);
   centeredTextColor(line, 62, 6, COL_DATE_BIG);
   snprintf(line, sizeof(line), "%ld", (long)year);
   centeredTextColor(line, 126, 3, COL_VALUE);
+#endif
   drawPageDots();
 }
 
@@ -2037,24 +2139,29 @@ void drawDatePage() {
 // Replaces the old "NO WIFI CONFIG / EDIT CONFIG" message, which told
 // the user to edit a #define that no longer exists.
 bool drawWifiGate() {
+#ifdef BOARD_SMARTRING_PLUS
+  const int y1 = 108, y2 = 176, y3 = 212;
+#else
+  const int y1 = 40,  y2 = 92,  y3 = 118;
+#endif
   if (wifiManager.isPortalActive()) {
-    centeredText("SETUP MODE", 40, 4);
-    centeredText("JOIN WIFI", 92, 2);
-    centeredText(AP_SSID, 118, 2);
+    centeredText("SETUP MODE", y1, 4);
+    centeredText("JOIN WIFI", y2, 2);
+    centeredText(AP_SSID, y3, 2);
     drawPageDots();
     return true;
   }
   if (!wifiConfigured()) {
-    centeredText("WIFI SETUP", 40, 4);
-    centeredText("HOLD SCREEN 3s", 92, 2);
-    centeredText("TO CONFIGURE", 118, 2);
+    centeredText("WIFI SETUP", y1, 4);
+    centeredText("HOLD SCREEN 3s", y2, 2);
+    centeredText("TO CONFIGURE", y3, 2);
     drawPageDots();
     return true;
   }
   if (!wifiManager.isConnected()) {
-    centeredText("CONNECTING", 40, 4);
-    centeredText("HOLD SCREEN 3s", 92, 2);
-    centeredText("FOR WIFI SETUP", 118, 2);
+    centeredText("CONNECTING", y1, 4);
+    centeredText("HOLD SCREEN 3s", y2, 2);
+    centeredText("FOR WIFI SETUP", y3, 2);
     drawPageDots();
     return true;
   }
@@ -2067,6 +2174,23 @@ void drawWeather() {
   gfx->fillScreen(BG);
   if (drawWifiGate()) return;
   const WeatherData &w = netView.weather;
+#ifdef BOARD_SMARTRING_PLUS
+  if (!w.valid) { centeredText("UPDATING", 168, 3); drawPageDots(); return; }
+  drawWeatherIcon(180, 84, w.code, w.isDay, COL_WICON);
+
+  String tempStr = String(w.temp);
+  const char *unit = settings.tempUnit == TEMP_FAHRENHEIT ? "F" : "C";
+  int totalW = (int)tempStr.length() * 48 + 18;
+  int tx = (SCREEN_W - totalW) / 2;
+  gfx->setTextSize(8); gfx->setTextColor(COL_TEMP);
+  gfx->setCursor(tx, 138); gfx->print(tempStr);
+  gfx->setTextSize(3); gfx->print(unit);
+
+  centeredTextColor(weatherCodeText(w.code), 214, 2, COL_WSUB);
+  String info = String("H ") + w.humidity + "%  W " + w.wind +
+                (settings.windUnit == WIND_MPH ? "MPH" : "KMH");
+  centeredTextColor(info.c_str(), 254, 2, COL_LABEL);
+#else
   if (!w.valid) { centeredText("UPDATING", 74, 3); drawPageDots(); return; }
   drawWeatherIcon(250, 66, w.code, w.isDay, COL_WICON);
   gfx->setTextSize(8); gfx->setTextColor(COL_TEMP);
@@ -2082,6 +2206,7 @@ void drawWeather() {
     int windW = (int)windStr.length() * 12;          // size-2 chars are 12 px wide
     gfx->setCursor(SCREEN_W - 14 - windW, 140);
     gfx->print(windStr); }
+#endif
   drawPageDots();
 }
 
@@ -2128,12 +2253,22 @@ void drawMoon() {
   float phase       = age/syn;
   int   illumination = (int)round((1.0f-cos(phase*6.2831853f))*50.0f);
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  drawMoonDisc(180, 118, 64, phase, COL_MOON);
+  centeredTextColor(moonPhaseLabel(phase), 202, 2, COL_MOONLAB);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "AGE %.1f DAYS", age);
+  centeredTextColor(buf, 236, 2, COL_VALUE);
+  snprintf(buf, sizeof(buf), "LIGHT %d%%", illumination);
+  centeredTextColor(buf, 266, 2, COL_VALUE);
+#else
   drawMoonDisc(240, 74, 58, phase, COL_MOON);
   gfx->setTextSize(2); gfx->setTextColor(COL_MOONLAB);
   gfx->setCursor(10, 24);  gfx->print(moonPhaseLabel(phase));
   gfx->setTextColor(COL_VALUE);
   gfx->setCursor(10, 92);  gfx->print("AGE "); gfx->print(age, 1); gfx->print(" DAYS");
   gfx->setCursor(10, 120); gfx->print("LIGHT "); gfx->print(illumination); gfx->print("%");
+#endif
   drawPageDots();
 }
 
@@ -2145,6 +2280,30 @@ void drawStock() {
   const uint8_t slot = shownStock();
   const StockData &s = netView.stocks[slot];
   const char *symbol = settings.stocks[slot].symbol;
+#ifdef BOARD_SMARTRING_PLUS
+  if (!s.valid) { centeredText("UPDATING", 168, 3); drawPageDots(); return; }
+  const float ref = s.prevClose > 0.0f ? s.prevClose : s.open;
+  uint16_t priceCol = (s.price >= ref) ? COL_PRICE_UP : COL_PRICE_DOWN;
+
+  centeredTextColor(symbol, 56, 4, COL_TICKER);
+  char pbuf[20];
+  snprintf(pbuf, sizeof(pbuf), "$%.2f", s.price);
+  uint8_t psize = ((int)strlen(pbuf) <= 7) ? 6 : 5;
+  centeredTextColor(pbuf, 108, psize, priceCol);
+
+  if (ref > 0.0f) {
+    char cbuf[16];
+    snprintf(cbuf, sizeof(cbuf), "%+.2f%%", (s.price - ref) / ref * 100.0f);
+    centeredTextColor(cbuf, 170, 3, priceCol);
+  }
+  char row[32];
+  snprintf(row, sizeof(row), "OPEN  %.2f", s.open);
+  centeredTextColor(row, 214, 2, COL_VALUE);
+  snprintf(row, sizeof(row), "HIGH  %.2f", s.high);
+  centeredTextColor(row, 242, 2, COL_VALUE);
+  snprintf(row, sizeof(row), "LOW   %.2f", s.low);
+  centeredTextColor(row, 270, 2, COL_VALUE);
+#else
   if (!s.valid) { centeredText("UPDATING", 74, 3); drawPageDots(); return; }
   char pbuf[16];
   snprintf(pbuf, sizeof(pbuf), "$%.2f", s.price);
@@ -2176,6 +2335,7 @@ void drawStock() {
   gfx->setCursor(150, 92);  gfx->print("OPEN  "); gfx->print(s.open, 2);
   gfx->setCursor(150, 116); gfx->print("HIGH  "); gfx->print(s.high, 2);
   gfx->setCursor(150, 140); gfx->print("LOW   "); gfx->print(s.low, 2);
+#endif
   drawPageDots();
 }
 
@@ -2239,6 +2399,62 @@ void drawCoin() {
   const uint8_t slot = shownCoin();
   const Coin &c = settings.coins[slot];
   const CoinData &d = netView.coins[slot];
+#ifdef BOARD_SMARTRING_PLUS
+  if (d.notFound) {
+    centeredText("NOT FOUND", 140, 3);
+    centeredText(c.pair, 186, 2);
+    drawPageDots(); return;
+  }
+  if (!d.valid) { centeredText("UPDATING", 168, 3); drawPageDots(); return; }
+
+  const float ref = (c.source == COIN_FINNHUB && d.ref <= 0.0f) ? d.open : d.ref;
+  const bool  haveRef = ref > 0.0f;
+  const bool  up = !haveRef || d.price >= ref;
+  const uint16_t col = up ? COL_PRICE_UP : COL_PRICE_DOWN;
+
+  char base[12];
+  { size_t i = 0; while (c.pair[i] && c.pair[i] != '-' && i < sizeof(base) - 1) { base[i] = c.pair[i]; i++; } base[i] = '\0'; }
+  centeredTextColor(base, 44, 3, COL_TICKER);
+
+  char num[24]; formatCoinPrice(d.price, num, sizeof num);
+  char code[8]; const CurrencyMark m = currencyOf(c.pair, code, sizeof code);
+  const int markUnits = (m == CUR_CODE) ? (int)strlen(code) + 1 : 1;
+  const int numLen = (int)strlen(num);
+  uint8_t psize = 5;
+  while (psize > 2 && (markUnits + numLen) * 6 * (int)psize > 268) psize--;
+  const int lineW = (markUnits + numLen) * 6 * psize;
+  const int py = 84 + (5 - psize) * 4;
+  int x0 = (SCREEN_W - lineW) / 2; if (x0 < 20) x0 = 20;
+  const int mw = drawCurrencyMark(m, code, x0, py, psize, col);
+  gfx->setTextSize(psize); gfx->setTextColor(col);
+  gfx->setCursor(x0 + mw, py);
+  gfx->print(num);
+
+  char cbuf[16];
+  if (haveRef) {
+    snprintf(cbuf, sizeof(cbuf), "%+.2f%%", (d.price - ref) / ref * 100.0);
+    centeredTextColor(cbuf, 136, 2, col);
+  }
+
+  if (c.source == COIN_COINBASE) {
+    drawCoinChart(d, haveRef, col, 56, 168, 248, 96);
+    if (d.high > 0.0f && d.low > 0.0f) {
+      char hi[16], lo[16], line[40];
+      formatCoinPrice(d.high, hi, sizeof hi);
+      formatCoinPrice(d.low, lo, sizeof lo);
+      snprintf(line, sizeof line, "H %s  L %s", hi, lo);
+      centeredTextColor(line, 278, 1, COL_LABEL);
+    }
+  } else {
+    char vo[16], vh[16], vl[16], row[36];
+    formatCoinPrice(d.open, vo, sizeof vo);
+    formatCoinPrice(d.high, vh, sizeof vh);
+    formatCoinPrice(d.low, vl, sizeof vl);
+    snprintf(row, sizeof row, "OPEN  %s", vo); centeredTextColor(row, 184, 2, COL_VALUE);
+    snprintf(row, sizeof row, "HIGH  %s", vh); centeredTextColor(row, 216, 2, COL_VALUE);
+    snprintf(row, sizeof row, "LOW   %s", vl); centeredTextColor(row, 248, 2, COL_VALUE);
+  }
+#else
   if (d.notFound) {
     centeredText("NOT FOUND", 56, 3);
     centeredText(c.pair, 100, 2);
@@ -2324,11 +2540,33 @@ void drawCoin() {
     gfx->setCursor(150, ys[1]); gfx->print("HIGH  "); gfx->print(vh);
     gfx->setCursor(150, ys[2]); gfx->print("LOW   "); gfx->print(vl);
   }
+#endif
   drawPageDots();
 }
 
 void drawGithub() {
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  if (!githubConfigured()) {
+    centeredText("NO GITHUB USER", 140, 3);
+    centeredText("SET GITHUB USER", 184, 2);
+    drawPageDots(); return;
+  }
+  if (drawWifiGate()) return;
+  const GithubData &g = netView.github;
+  if (!g.valid) { centeredText("UPDATING", 168, 3); drawPageDots(); return; }
+
+  const int scale = 2;
+  drawBitmapScaled((SCREEN_W - GH_W * scale) / 2, 42, bmp_github, GH_W, GH_H, scale, COL_GHLOGO);
+
+  char fbuf[16], rbuf[16], rline[28];
+  formatCount(g.followers, fbuf, sizeof(fbuf));
+  formatCount(g.repos, rbuf, sizeof(rbuf));
+  centeredTextColor(fbuf, 168, followerTextSize(fbuf), COL_GHNUM);
+  centeredTextColor("FOLLOWERS", 222, 2, COL_LABEL);
+  snprintf(rline, sizeof(rline), "%s REPOS", rbuf);
+  centeredTextColor(rline, 258, 3, COL_VALUE);
+#else
   if (!githubConfigured()) {
     centeredText("NO GITHUB USER", 60, 3);
     centeredText("SET GITHUB USER", 100, 2);
@@ -2360,6 +2598,7 @@ void drawGithub() {
   gfx->setTextColor(COL_LABEL);
   gfx->setTextSize(1);
   gfx->setCursor(rx, 140); gfx->print("REPOS");
+#endif
   drawPageDots();
 }
 
@@ -2369,6 +2608,26 @@ void drawGithub() {
 
 void drawPortalScreen() {
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  centeredTextColor("WIFI SETUP", 44, 2, rgb(0,180,255));
+  if ((millis() / 500) % 2 == 0) gfx->fillCircle(268, 52, 5, rgb(0,220,120));
+  gfx->drawLine(64, 70, SCREEN_W - 64, 70, rgb(0,180,255));
+
+  centeredTextColor("1  JOIN THIS WIFI", 86, 1, rgb(150,160,175));
+  centeredTextColor(AP_SSID, 104, 2, FG);
+
+  centeredTextColor("PASSWORD", 140, 1, rgb(150,160,175));
+  centeredTextColor(AP_PASS, 158, 2, FG);
+
+  centeredTextColor("2  OPEN IN BROWSER", 194, 1, rgb(150,160,175));
+  centeredTextColor("192.168.4.1", 212, 2, rgb(0,200,255));
+
+  char cbuf[32];
+  uint8_t clients = WiFi.softAPgetStationNum();
+  snprintf(cbuf, sizeof(cbuf), "CONNECTED CLIENTS: %u", (unsigned)clients);
+  centeredTextColor(cbuf, 254, 1, clients ? rgb(0,220,120) : rgb(120,120,120));
+  centeredTextColor("hold screen 3s to close", 282, 1, rgb(110,110,110));
+#else
   gfx->drawLine(0, 24, SCREEN_W, 24, rgb(0,180,255));
   centeredTextColor("WIFI SETUP", 5, 2, rgb(0,180,255));
 
@@ -2393,6 +2652,7 @@ void drawPortalScreen() {
   snprintf(cbuf, sizeof(cbuf), "CONNECTED CLIENTS: %u", (unsigned)clients);
   centeredTextColor(cbuf, 142, 1, clients ? rgb(0,220,120) : rgb(120,120,120));
   centeredTextColor("hold screen 3s to close", 158, 1, rgb(110,110,110));
+#endif
 }
 
 // While the portal is up, this owns the main loop: AWM needs update()
@@ -2834,12 +3094,6 @@ void readSensors() {
   // Fast spin → surprised face
   if (fabs(filteredGz) > 130.0f) { faceMood = 2; pressPulse = 1.0f; }
 
-  static uint32_t lastImuLog = 0;
-  if (millis() - lastImuLog > 1000) {
-    lastImuLog = millis();
-    Serial.printf("[IMU] ready=%d ax=%.2f ay=%.2f az=%.2f gz=%.1f\n",
-                  imuReady, accel.accelX, accel.accelY, accel.accelZ, gyro.gyroZ);
-  }
 }
 
 void readTouch() {
@@ -3132,7 +3386,11 @@ void netTask(void *) {
 
 void calibrateNeutral() {
   gfx->fillScreen(BG);
+#ifdef BOARD_SMARTRING_PLUS
+  centeredText("HOLD STILL", 168, 3);
+#else
   centeredText("HOLD STILL", 76, 2);
+#endif
   gfx->flush();
   delay(900);
   for (uint8_t i = 0; i < 100; i++) { imu.update(); delay(5); }
@@ -3383,22 +3641,40 @@ void loop() {
     if (nightBanner) snprintf(msg, sizeof(msg), "NIGHT %u%%", (unsigned)levelPercent(settings.night.brightness));
     else             snprintf(msg, sizeof(msg), "BRIGHTNESS %u%%", (unsigned)levelPercent(brightnessLevel));
     uint16_t bannerColor = rgb(0,200,255);
+#ifdef BOARD_SMARTRING_PLUS
+    gfx->setTextSize(2);
+    gfx->setTextColor(bannerColor);
+    int bw = (int)strlen(msg)*12;
+    gfx->fillRoundRect((SCREEN_W-bw-24)/2, SCREEN_H/2-18, bw+24, 36, 8, BG);
+    gfx->drawRoundRect((SCREEN_W-bw-24)/2, SCREEN_H/2-18, bw+24, 36, 8, bannerColor);
+    gfx->setCursor((SCREEN_W-bw)/2, SCREEN_H/2-8);
+#else
     gfx->setTextSize(1);
     gfx->setTextColor(bannerColor);
     int bw = (int)strlen(msg)*6;
     gfx->fillRoundRect((SCREEN_W-bw-12)/2, SCREEN_H/2-10, bw+12, 20, 4, BG);
     gfx->drawRoundRect((SCREEN_W-bw-12)/2, SCREEN_H/2-10, bw+12, 20, 4, bannerColor);
     gfx->setCursor((SCREEN_W-bw)/2, SCREEN_H/2-4);
+#endif
     gfx->print(msg);
   } else if (autoPageBannerUntil) {
     const char *msg = autoPageEnabled ? "AUTO: ON" : "AUTO: OFF";
     uint16_t bannerColor = autoPageEnabled ? rgb(0,200,80) : rgb(200,60,60);
+#ifdef BOARD_SMARTRING_PLUS
+    gfx->setTextSize(2);
+    gfx->setTextColor(bannerColor);
+    int bw = (int)strlen(msg)*12;
+    gfx->fillRoundRect((SCREEN_W-bw-24)/2, SCREEN_H/2-18, bw+24, 36, 8, BG);
+    gfx->drawRoundRect((SCREEN_W-bw-24)/2, SCREEN_H/2-18, bw+24, 36, 8, bannerColor);
+    gfx->setCursor((SCREEN_W-bw)/2, SCREEN_H/2-8);
+#else
     gfx->setTextSize(1);
     gfx->setTextColor(bannerColor);
     int bw = (int)strlen(msg)*6;
     gfx->fillRoundRect((SCREEN_W-bw-12)/2, SCREEN_H/2-10, bw+12, 20, 4, BG);
     gfx->drawRoundRect((SCREEN_W-bw-12)/2, SCREEN_H/2-10, bw+12, 20, 4, bannerColor);
     gfx->setCursor((SCREEN_W-bw)/2, SCREEN_H/2-4);
+#endif
     gfx->print(msg);
   }
   gfx->flush();
